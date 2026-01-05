@@ -127,19 +127,52 @@ int main(int argc, char* argv[]) {
         if (!g_running) break;
 
         // 1. 捕获屏幕 (Hook/Capture)
-        // 注意：为了避免捕获到我们自己的窗口（产生无限递归/镜像效果），
-        // 我们可以先隐藏窗口，截屏，再显示。但这会闪烁。
-        // 或者使用 PrintWindow (仅针对特定窗口)。
-        // 但对于全局效果，递归视觉效果通常是可以接受的，甚至是有趣的。
-        // 如果想避免，需要更高级的 DXGI 截屏（可能会忽略 Overlay）。
-        // 这里直接 BitBlt，会包含所有内容。
-        BitBlt(hCaptureDC, 0, 0, screenW, screenH, hScreenDC, 0, 0, SRCCOPY);
+        // BitBlt(hCaptureDC, 0, 0, screenW, screenH, hScreenDC, 0, 0, SRCCOPY);
+        
+        // 我们需要把 CaptureDC 的内容给 Renderer
+        // 但 Renderer 现在接受 std::vector<RGBQUAD> 的小图
+        // 所以我们在这里做缩放和读取像素
+        
+        // 创建一个小图 DC 用于缩放 (在 main 循环外创建更好，但为了最少改动...)
+        // 实际上，AsciiRenderer 内部也可以处理，但现在接口变了
+        // 我们在 main 里面做缩放比较灵活
+        
+        // 缩放：Screen -> Small
+        static HDC hSmallDC = NULL;
+        static HBITMAP hSmallBmp = NULL;
+        static std::vector<RGBQUAD> pixels;
+        static BITMAPINFO bmi = {0};
+        
+        if (!hSmallDC) {
+            hSmallDC = CreateCompatibleDC(hScreenDC);
+            hSmallBmp = CreateCompatibleBitmap(hScreenDC, renderer.GetWidth(), renderer.GetHeight());
+            SelectObject(hSmallDC, hSmallBmp);
+            
+            pixels.resize(renderer.GetWidth() * renderer.GetHeight());
+            
+            bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bmi.bmiHeader.biWidth = renderer.GetWidth();
+            bmi.bmiHeader.biHeight = -renderer.GetHeight();
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = BI_RGB;
+            
+            SetStretchBltMode(hSmallDC, HALFTONE);
+        }
+        
+        // 缩放截屏
+        StretchBlt(hSmallDC, 0, 0, renderer.GetWidth(), renderer.GetHeight(), 
+                   hScreenDC, 0, 0, screenW, screenH, SRCCOPY);
+                   
+        // 获取像素
+        GetDIBits(hSmallDC, hSmallBmp, 0, renderer.GetHeight(), 
+                  pixels.data(), &bmi, DIB_RGB_COLORS);
 
-        // 2. 处理并绘制到 BackBuffer
-        renderer.ProcessAndDraw(hCaptureDC, hBackDC, screenW, screenH);
+        // 2. 处理 (Render to Internal Buffer)
+        renderer.Render(pixels);
 
-        // 3. Present (BackBuffer -> Window)
-        BitBlt(hWinDC, 0, 0, screenW, screenH, hBackDC, 0, 0, SRCCOPY);
+        // 3. 绘制 (Present Internal Buffer to Window)
+        renderer.Draw(hWinDC);
 
         // 简单的帧率控制，避免占满 CPU
         Sleep(10);

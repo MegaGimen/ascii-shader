@@ -2,41 +2,47 @@
 #define ASCII_RENDERER_H
 
 #include <windows.h>
-#include <string>
 #include <vector>
+#include <string>
+#include <cstdint>
 
 class AsciiRenderer {
 public:
     AsciiRenderer();
     ~AsciiRenderer();
 
-    // 初始化
-    // width: ASCII 字符宽度 (列数)
+    // 初始化渲染器，指定一行有多少个字符
     bool Initialize(int width);
+    
+    // 输入屏幕截图数据，进行处理
+    void Render(const std::vector<RGBQUAD>& pixels);
+    
+    // 将结果绘制到目标设备上下文
+    void Draw(HDC hDestDC);
 
-    // 处理并绘制
-    // hSrcDC: 源 DC (包含屏幕截图)
-    // hDestDC: 目标 DC (绘制窗口)
-    // screenW, screenH: 屏幕宽高
-    void ProcessAndDraw(HDC hSrcDC, HDC hDestDC, int screenW, int screenH);
+    int GetWidth() const { return m_width; }
+    int GetHeight() const { return m_height; }
 
 private:
-    int m_width;     // ASCII 列数
-    int m_height;    // ASCII 行数 (根据屏幕比例计算)
-    
-    HDC m_hSmallDC;      // 用于缩放的小图 DC
-    HBITMAP m_hSmallBmp; // 用于缩放的小位图
-    HBITMAP m_hOldSmallBmp;
-    
-    HFONT m_hFont;       // 用于绘制的字体
-    int m_fontWidth;     // 字体宽
-    int m_fontHeight;    // 字体高
+    void PrecomputeFontAtlas();
 
-    std::string m_asciiTable; // 字符映射表
+private:
+    int m_width;        // ASCII 字符列数
+    int m_height;       // ASCII 字符行数
+    int m_screenWidth;
+    int m_screenHeight;
+    int m_fontWidth;
+    int m_fontHeight;
     
-    // 预分配像素缓冲区
-    std::vector<RGBQUAD> m_pixels;
-    BITMAPINFO m_bmi;
+    std::string m_asciiTable;
+    
+    // GDI 资源 (仅用于生成 Atlas)
+    HFONT m_hFont;
+    
+    // 软件渲染缓冲区
+    std::vector<uint32_t> m_screenBuffer; // 最终屏幕像素 (0x00RRGGBB)
+    std::vector<uint8_t> m_fontAtlas;     // 字体纹理 (256 * fontH * fontW)
+    BITMAPINFO m_bmi;                     // 用于 SetDIBitsToDevice
 };
 
 #endif // ASCII_RENDERER_H

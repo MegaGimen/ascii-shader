@@ -1,64 +1,41 @@
 #include "ascii_renderer.h"
 #include <iostream>
 #include <cmath>
+#include <cstdint>
+#include <algorithm>
 
 AsciiRenderer::AsciiRenderer() 
-    : m_width(0), m_height(0), 
-      m_hSmallDC(NULL), m_hSmallBmp(NULL), m_hOldSmallBmp(NULL), 
-      m_hFont(NULL), m_fontWidth(0), m_fontHeight(0) 
+    : m_width(0), m_height(0), m_screenWidth(0), m_screenHeight(0),
+      m_fontWidth(0), m_fontHeight(0), m_hFont(NULL)
 {
-    // 初始化字符表 (Detailed)
+    // 初始化字符表
     m_asciiTable = " .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$";
 }
 
 AsciiRenderer::~AsciiRenderer() {
-    if (m_hSmallDC) {
-        SelectObject(m_hSmallDC, m_hOldSmallBmp);
-        DeleteDC(m_hSmallDC);
-    }
-    if (m_hSmallBmp) DeleteObject(m_hSmallBmp);
     if (m_hFont) DeleteObject(m_hFont);
 }
 
 bool AsciiRenderer::Initialize(int width) {
     m_width = width;
     
-    // 获取屏幕比例来计算高度
-    int screenW = GetSystemMetrics(SM_CXSCREEN);
-    int screenH = GetSystemMetrics(SM_CYSCREEN);
+    // 获取屏幕分辨率
+    m_screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    m_screenHeight = GetSystemMetrics(SM_CYSCREEN);
     
-    // ASCII 字符通常是瘦长的 (例如 8x16 像素)。
-    // 假设字符宽高比约为 1:2。
-    // 为了保持图像比例: (W_char * cols) / (H_char * rows) = ScreenW / ScreenH
-    // rows = (W_char * cols * ScreenH) / (H_char * ScreenW)
-    // 假设 W_char/H_char = 0.5 (Consolas 大概是这个比例)
-    // rows = (0.5 * cols * ScreenH) / ScreenW
+    // 计算字体大小
+    m_fontWidth = m_screenWidth / m_width;
+    if (m_fontWidth < 1) m_fontWidth = 1;
     
-    double charAspectRatio = 0.5; 
-    m_height = (int)((charAspectRatio * m_width * screenH) / screenW);
+    // 假设字符高宽比 2:1
+    m_fontHeight = m_fontWidth * 2;
     
+    // 根据屏幕高度计算行数
+    m_height = m_screenHeight / m_fontHeight;
     if (m_height < 1) m_height = 1;
 
-    // 创建小图 DC
-    HDC hScreenDC = GetDC(NULL);
-    m_hSmallDC = CreateCompatibleDC(hScreenDC);
-    m_hSmallBmp = CreateCompatibleBitmap(hScreenDC, m_width, m_height);
-    m_hOldSmallBmp = (HBITMAP)SelectObject(m_hSmallDC, m_hSmallBmp);
-    ReleaseDC(NULL, hScreenDC);
-
-    // 设置拉伸模式为半色调，质量更好
-    SetStretchBltMode(m_hSmallDC, HALFTONE);
-    SetBrushOrgEx(m_hSmallDC, 0, 0, NULL);
-
-    // 创建字体
-    // 计算目标字体大小
-    // 目标屏幕宽度 = screenW
-    // 字符数 = m_width
-    // 单个字符宽度 = screenW / m_width
-    m_fontWidth = screenW / m_width;
-    // 保持 1:2 比例
-    m_fontHeight = m_fontWidth * 2; 
-
+    // 创建字体用于生成 Atlas
+    if (m_hFont) DeleteObject(m_hFont);
     m_hFont = CreateFontA(
         m_fontHeight,       // Height
         m_fontWidth,        // Width
@@ -73,121 +50,145 @@ bool AsciiRenderer::Initialize(int width) {
         "Consolas"          // FaceName
     );
 
-    // 预分配像素缓冲区
-    m_pixels.resize(m_width * m_height);
+    // 初始化屏幕缓冲区
+    // 大小必须是屏幕的完整像素数
+    m_screenBuffer.resize(m_screenWidth * m_screenHeight);
     
+    // 设置 BITMAPINFO
     ZeroMemory(&m_bmi, sizeof(BITMAPINFO));
     m_bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    m_bmi.bmiHeader.biWidth = m_width;
-    m_bmi.bmiHeader.biHeight = -m_height; // 负值表示自上而下
+    m_bmi.bmiHeader.biWidth = m_screenWidth;
+    m_bmi.bmiHeader.biHeight = -m_screenHeight; // 自上而下
     m_bmi.bmiHeader.biPlanes = 1;
-    m_bmi.bmiHeader.biBitCount = 32;
+    m_bmi.bmiHeader.biBitCount = 32; // 32-bit RGB
     m_bmi.bmiHeader.biCompression = BI_RGB;
+
+    // 生成字体纹理 Atlas
+    PrecomputeFontAtlas();
 
     return true;
 }
 
-void AsciiRenderer::ProcessAndDraw(HDC hSrcDC, HDC hDestDC, int screenW, int screenH) {
-    // 1. 缩放截图到小图
-    StretchBlt(m_hSmallDC, 0, 0, m_width, m_height, 
-               hSrcDC, 0, 0, screenW, screenH, SRCCOPY);
+void AsciiRenderer::PrecomputeFontAtlas() {
+    // 创建一个临时 DC 和 Bitmap 来绘制每个字符
+    HDC hScreenDC = GetDC(NULL);
+    HDC hMemDC = CreateCompatibleDC(hScreenDC);
+    HBITMAP hBitmap = CreateCompatibleBitmap(hScreenDC, m_fontWidth, m_fontHeight);
+    HGDIOBJ hOldBitmap = SelectObject(hMemDC, hBitmap);
+    HGDIOBJ hOldFont = SelectObject(hMemDC, m_hFont);
+    
+    // 256 个字符，每个字符占 m_fontWidth * m_fontHeight 字节
+    m_fontAtlas.resize(256 * m_fontWidth * m_fontHeight);
+    std::fill(m_fontAtlas.begin(), m_fontAtlas.end(), 0);
 
-    // 2. 获取像素数据
-    GetDIBits(m_hSmallDC, m_hSmallBmp, 0, m_height, 
-              m_pixels.data(), &m_bmi, DIB_RGB_COLORS);
+    // 临时缓冲区读取 Bitmap 像素
+    std::vector<uint32_t> tempPixels(m_fontWidth * m_fontHeight);
+    BITMAPINFO bmi = {0};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = m_fontWidth;
+    bmi.bmiHeader.biHeight = -m_fontHeight;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
 
-    // 3. 准备绘制
-    // 填充黑色背景
-    RECT rect = {0, 0, screenW, screenH};
-    FillRect(hDestDC, &rect, (HBRUSH)GetStockObject(BLACK_BRUSH));
+    RECT rect = {0, 0, m_fontWidth, m_fontHeight};
 
-    HFONT hOldFont = (HFONT)SelectObject(hDestDC, m_hFont);
-    SetBkMode(hDestDC, TRANSPARENT);
+    for (int i = 0; i < 256; ++i) {
+        // 清黑背景
+        FillRect(hMemDC, &rect, (HBRUSH)GetStockObject(BLACK_BRUSH));
+        SetBkMode(hMemDC, TRANSPARENT);
+        SetTextColor(hMemDC, RGB(255, 255, 255)); // 白色文字
 
-    // 4. 遍历像素并绘制字符
-    int tableLen = m_asciiTable.length();
-    int xPos = 0;
-    int yPos = 0;
+        char c = (char)i;
+        TextOutA(hMemDC, 0, 0, &c, 1);
 
-    // 预计算坐标映射以避免浮点运算
-    // 其实既然我们是固定宽度的字体，直接累加即可
-    // xPos = col * m_fontWidth
-    // yPos = row * m_fontHeight
+        // 读取像素
+        GetDIBits(hMemDC, hBitmap, 0, m_fontHeight, tempPixels.data(), &bmi, DIB_RGB_COLORS);
 
-    // 优化：使用 SetTextColor 和 TextOut 还是比较慢
-    // 但在没有 Direct2D 的情况下这是最简单的
-    // 优化2：ExtTextOut 通常比 TextOut 快一点点
-    // 优化3：缓存颜色，避免重复调用 SetTextColor
-    // 优化4：批处理绘制 (Batch Drawing) - 极大幅度减少 syscall
-
-    COLORREF lastColor = CLR_INVALID;
-    std::string currentString;
-    currentString.reserve(m_width); // 预分配
-    int startX = 0;
-
-    for (int y = 0; y < m_height; ++y) {
-        xPos = 0;
-        startX = 0; // 每行开始重置 startX
-        currentString.clear();
-        lastColor = CLR_INVALID; // 每行开始重置颜色状态，强制第一次设置颜色
-
-        for (int x = 0; x < m_width; ++x) {
-            int idx = y * m_width + x;
-            RGBQUAD& p = m_pixels[idx];
-
-            // 计算灰度
-            // Y = 0.299R + 0.587G + 0.114B
-            // 为了速度使用整数运算: (299*R + 587*G + 114*B) / 1000
-            int gray = (299 * p.rgbRed + 587 * p.rgbGreen + 114 * p.rgbBlue) / 1000;
-            
-            // 映射到字符
-            int charIdx = (gray * (tableLen - 1)) / 255;
-            char c = m_asciiTable[charIdx];
-
-            // 设置颜色 (仅当颜色变化时)
-            COLORREF currentColor = RGB(p.rgbRed, p.rgbGreen, p.rgbBlue);
-            /* 逻辑移动到了下方 */
-            
-            // 绘制字符
-            // ETO_OPAQUE: 用背景色填充矩形 (这里不需要，因为我们已经清屏且 SetBkMode 为 TRANSPARENT)
-            // TextOutA(hDestDC, xPos, yPos, &c, 1);
-            // ExtTextOutA(hDestDC, xPos, yPos, 0, NULL, &c, 1, NULL);
-            
-            // 批处理优化逻辑：
-            // 我们不立即绘制，而是检测“当前字符颜色是否与上一个相同”
-            // 如果相同，我们只增加 buffer 里的字符
-            // 如果不同，或者换行了，我们就把 buffer 里的字符串一次性画出来
-            
-            if (currentColor == lastColor && currentString.length() < 256) {
-                // 颜色相同，追加字符
-                currentString += c;
+        // 存入 Atlas
+        // 任何非黑色像素视为点亮
+        int atlasOffset = i * m_fontWidth * m_fontHeight;
+        for (int p = 0; p < m_fontWidth * m_fontHeight; ++p) {
+            // 简单阈值处理：如果是白色(或非黑)，设为1
+            // tempPixels 是 0x00RRGGBB
+            if ((tempPixels[p] & 0x00FFFFFF) != 0) {
+                m_fontAtlas[atlasOffset + p] = 1;
             } else {
-                // 颜色不同，先画出之前的
-                if (!currentString.empty()) {
-                    // 设置之前的颜色
-                    SetTextColor(hDestDC, lastColor);
-                    // 一次性绘制一串字符
-                    ExtTextOutA(hDestDC, startX, yPos, 0, NULL, currentString.c_str(), currentString.length(), NULL);
-                }
-                
-                // 重置状态为当前新颜色/新字符
-                lastColor = currentColor;
-                currentString = c;
-                startX = xPos;
+                m_fontAtlas[atlasOffset + p] = 0;
             }
-            
-            xPos += m_fontWidth;
         }
-        
-        // 行末：必须把缓冲区剩下的画出来
-        if (!currentString.empty()) {
-            SetTextColor(hDestDC, lastColor);
-            ExtTextOutA(hDestDC, startX, yPos, 0, NULL, currentString.c_str(), currentString.length(), NULL);
-            currentString.clear();
-        }
-        
-        yPos += m_fontHeight;
     }
 
-    SelectObject(hDestDC, hOldFont);
+    SelectObject(hMemDC, hOldFont);
+    SelectObject(hMemDC, hOldBitmap);
+    DeleteObject(hBitmap);
+    DeleteDC(hMemDC);
+    ReleaseDC(NULL, hScreenDC);
+}
+
+void AsciiRenderer::Render(const std::vector<RGBQUAD>& pixels) {
+    // pixels 是输入的小图 (m_width * m_height)
+    // m_screenBuffer 是输出的大图 (m_screenWidth * m_screenHeight)
+    
+    // 清空屏幕缓冲区 (黑色背景)
+    std::fill(m_screenBuffer.begin(), m_screenBuffer.end(), 0);
+
+    int tableLen = m_asciiTable.length();
+    
+    // 并行优化提示：这里可以用 OpenMP，但为了简单先单线程
+    // 遍历每一个 ASCII 格子
+    for (int r = 0; r < m_height; ++r) {
+        for (int c = 0; c < m_width; ++c) {
+            // 1. 获取字符和颜色
+            int pixelIdx = r * m_width + c;
+            if (pixelIdx >= pixels.size()) continue;
+            
+            const RGBQUAD& p = pixels[pixelIdx];
+            
+            // 计算灰度
+            int gray = (299 * p.rgbRed + 587 * p.rgbGreen + 114 * p.rgbBlue) / 1000;
+            int charIdx = (gray * (tableLen - 1)) / 255;
+            unsigned char asciiChar = (unsigned char)m_asciiTable[charIdx];
+            
+            uint32_t color = (p.rgbRed << 16) | (p.rgbGreen << 8) | p.rgbBlue;
+
+            // 2. 绘制到屏幕缓冲区
+            // 目标屏幕位置
+            int startScreenX = c * m_fontWidth;
+            int startScreenY = r * m_fontHeight;
+            
+            // Atlas 偏移
+            int atlasOffset = asciiChar * m_fontWidth * m_fontHeight;
+            
+            for (int fy = 0; fy < m_fontHeight; ++fy) {
+                int screenY = startScreenY + fy;
+                if (screenY >= m_screenHeight) break;
+                
+                int screenRowOffset = screenY * m_screenWidth;
+                int atlasRowOffset = atlasOffset + fy * m_fontWidth;
+
+                for (int fx = 0; fx < m_fontWidth; ++fx) {
+                    int screenX = startScreenX + fx;
+                    if (screenX >= m_screenWidth) break;
+
+                    if (m_fontAtlas[atlasRowOffset + fx]) {
+                        m_screenBuffer[screenRowOffset + screenX] = color;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void AsciiRenderer::Draw(HDC hDestDC) {
+    SetDIBitsToDevice(
+        hDestDC,
+        0, 0, 
+        m_screenWidth, m_screenHeight,
+        0, 0,
+        0, m_screenHeight,
+        m_screenBuffer.data(),
+        &m_bmi,
+        DIB_RGB_COLORS
+    );
 }
