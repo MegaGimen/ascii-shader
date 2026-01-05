@@ -5,7 +5,7 @@
 
 // 全局变量
 bool g_running = true;
-const int ASCII_WIDTH = 150; // 增加宽度以获得更好的细节
+int g_asciiWidth = 150; // 默认宽度
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
@@ -13,20 +13,21 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             g_running = false;
             PostQuitMessage(0);
             return 0;
-        case WM_KEYDOWN:
-            if (wParam == 'Q') {
-                g_running = false;
-                PostQuitMessage(0);
-            }
-            return 0;
-        case WM_ERASEBKGND:
-            return 1; // 防止闪烁，自己绘制背景
+        // 注意：当窗口穿透鼠标时，WM_KEYDOWN 可能无法接收
+        // 所以我们可能需要使用 GetAsyncKeyState 在主循环中检测
     }
     return DefWindowProc(hwnd, uMsg, wParam, lParam);
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    if (argc > 1) {
+        g_asciiWidth = std::stoi(argv[1]);
+        if (g_asciiWidth < 10) g_asciiWidth = 10;
+        if (g_asciiWidth > 1000) g_asciiWidth = 1000;
+    }
+
     std::cout << "Starting ASCII Screen Shader (Memory Mode)..." << std::endl;
+    std::cout << "Resolution (Width): " << g_asciiWidth << std::endl;
     std::cout << "Initializing..." << std::endl;
 
     // 获取屏幕尺寸
@@ -44,7 +45,7 @@ int main() {
     RegisterClass(&wc);
 
     HWND hwnd = CreateWindowEx(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW, // 移除 WS_EX_LAYERED 以提高性能，不需要透明
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_LAYERED, // WS_EX_TRANSPARENT 让鼠标穿透
         CLASS_NAME,
         "ASCII Shader",
         WS_POPUP | WS_VISIBLE,
@@ -56,6 +57,11 @@ int main() {
         std::cerr << "Failed to create window" << std::endl;
         return 1;
     }
+
+    // 设置不透明度 (255 = 完全不透明) - 需要 WS_EX_LAYERED 才能使 WS_EX_TRANSPARENT 生效(在某些旧系统上)
+    // 但更重要的是 WS_EX_TRANSPARENT 本身。
+    // 为了保险，设置 Layered 属性
+    SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
 
     // 防止截屏递归 (Visual Feedback Loop)
     // WDA_EXCLUDEFROMCAPTURE (0x00000011) 仅在 Win10 2004+ 支持
@@ -72,7 +78,7 @@ int main() {
 
     // 初始化渲染器
     AsciiRenderer renderer;
-    if (!renderer.Initialize(ASCII_WIDTH)) {
+    if (!renderer.Initialize(g_asciiWidth)) {
         std::cerr << "Failed to initialize renderer" << std::endl;
         return 1;
     }
@@ -95,6 +101,11 @@ int main() {
 
     MSG msg = { };
     while (g_running) {
+        // 检测全局按键 'Q' (0x51)
+        if (GetAsyncKeyState(0x51) & 0x8000) {
+            g_running = false;
+        }
+
         // 处理消息
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg);
