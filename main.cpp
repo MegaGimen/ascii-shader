@@ -57,6 +57,19 @@ int main() {
         return 1;
     }
 
+    // 防止截屏递归 (Visual Feedback Loop)
+    // WDA_EXCLUDEFROMCAPTURE (0x00000011) 仅在 Win10 2004+ 支持
+    // 它允许窗口在截屏中不可见（透视），从而捕获到底层内容
+    #ifndef WDA_EXCLUDEFROMCAPTURE
+    #define WDA_EXCLUDEFROMCAPTURE 0x00000011
+    #endif
+    
+    if (!SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)) {
+        std::cerr << "Warning: Failed to set Window Display Affinity. You may experience feedback loops." << std::endl;
+        // 尝试旧版参数，虽然可能导致黑屏而不是透视
+        SetWindowDisplayAffinity(hwnd, 0x01); // WDA_MONITOR
+    }
+
     // 初始化渲染器
     AsciiRenderer renderer;
     if (!renderer.Initialize(ASCII_WIDTH)) {
