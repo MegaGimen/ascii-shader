@@ -26,10 +26,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 }
 
 int main(int argc, char* argv[]) {
+    // 启用 DPI 感知，确保获取真实的物理分辨率
+    SetProcessDPIAware();
+
     if (argc > 1) {
         g_asciiWidth = std::stoi(argv[1]);
         if (g_asciiWidth < 10) g_asciiWidth = 10;
-        if (g_asciiWidth > 1000) g_asciiWidth = 1000;
+        // 移除 1000 的上限限制，允许用户设置为 1920 等高分辨率
+        if (g_asciiWidth > 8000) g_asciiWidth = 8000; // 设置一个合理的上限
     }
 
     std::cout << "Starting ASCII Screen Shader (Memory Mode)..." << std::endl;
