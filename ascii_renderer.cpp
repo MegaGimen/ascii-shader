@@ -118,11 +118,19 @@ void AsciiRenderer::ProcessAndDraw(HDC hSrcDC, HDC hDestDC, int screenW, int scr
     // 但在没有 Direct2D 的情况下这是最简单的
     // 优化2：ExtTextOut 通常比 TextOut 快一点点
     // 优化3：缓存颜色，避免重复调用 SetTextColor
+    // 优化4：批处理绘制 (Batch Drawing) - 极大幅度减少 syscall
 
     COLORREF lastColor = CLR_INVALID;
+    std::string currentString;
+    currentString.reserve(m_width); // 预分配
+    int startX = 0;
 
     for (int y = 0; y < m_height; ++y) {
         xPos = 0;
+        startX = 0; // 每行开始重置 startX
+        currentString.clear();
+        lastColor = CLR_INVALID; // 每行开始重置颜色状态，强制第一次设置颜色
+
         for (int x = 0; x < m_width; ++x) {
             int idx = y * m_width + x;
             RGBQUAD& p = m_pixels[idx];
@@ -138,18 +146,46 @@ void AsciiRenderer::ProcessAndDraw(HDC hSrcDC, HDC hDestDC, int screenW, int scr
 
             // 设置颜色 (仅当颜色变化时)
             COLORREF currentColor = RGB(p.rgbRed, p.rgbGreen, p.rgbBlue);
-            if (currentColor != lastColor) {
-                SetTextColor(hDestDC, currentColor);
-                lastColor = currentColor;
-            }
+            /* 逻辑移动到了下方 */
             
             // 绘制字符
             // ETO_OPAQUE: 用背景色填充矩形 (这里不需要，因为我们已经清屏且 SetBkMode 为 TRANSPARENT)
             // TextOutA(hDestDC, xPos, yPos, &c, 1);
-            ExtTextOutA(hDestDC, xPos, yPos, 0, NULL, &c, 1, NULL);
+            // ExtTextOutA(hDestDC, xPos, yPos, 0, NULL, &c, 1, NULL);
+            
+            // 批处理优化逻辑：
+            // 我们不立即绘制，而是检测“当前字符颜色是否与上一个相同”
+            // 如果相同，我们只增加 buffer 里的字符
+            // 如果不同，或者换行了，我们就把 buffer 里的字符串一次性画出来
+            
+            if (currentColor == lastColor && currentString.length() < 256) {
+                // 颜色相同，追加字符
+                currentString += c;
+            } else {
+                // 颜色不同，先画出之前的
+                if (!currentString.empty()) {
+                    // 设置之前的颜色
+                    SetTextColor(hDestDC, lastColor);
+                    // 一次性绘制一串字符
+                    ExtTextOutA(hDestDC, startX, yPos, 0, NULL, currentString.c_str(), currentString.length(), NULL);
+                }
+                
+                // 重置状态为当前新颜色/新字符
+                lastColor = currentColor;
+                currentString = c;
+                startX = xPos;
+            }
             
             xPos += m_fontWidth;
         }
+        
+        // 行末：必须把缓冲区剩下的画出来
+        if (!currentString.empty()) {
+            SetTextColor(hDestDC, lastColor);
+            ExtTextOutA(hDestDC, startX, yPos, 0, NULL, currentString.c_str(), currentString.length(), NULL);
+            currentString.clear();
+        }
+        
         yPos += m_fontHeight;
     }
 
