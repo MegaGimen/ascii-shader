@@ -16,22 +16,38 @@ AsciiRenderer::~AsciiRenderer() {
     if (m_hFont) DeleteObject(m_hFont);
 }
 
-bool AsciiRenderer::Initialize(int width) {
-    m_width = width;
-    
+bool AsciiRenderer::Initialize(int targetWidth) {
     // 获取屏幕分辨率
     m_screenWidth = GetSystemMetrics(SM_CXSCREEN);
     m_screenHeight = GetSystemMetrics(SM_CYSCREEN);
     
-    // 计算字体大小
-    m_fontWidth = m_screenWidth / m_width;
+    // 智能计算：优先保证铺满屏幕，而不是严格遵守 targetWidth
+    // 1. 根据用户想要的分辨率，计算理想的字体像素宽度 (浮点数)
+    float idealFontWidth = (float)m_screenWidth / targetWidth;
+    
+    // 2. 四舍五入到最近的整数像素 (至少为 1)
+    m_fontWidth = (int)std::round(idealFontWidth);
     if (m_fontWidth < 1) m_fontWidth = 1;
     
-    // 假设字符高宽比 2:1
+    // 3. 反推实际能铺满屏幕的列数
+    // 使用 ceil 确保即使有余数也覆盖，或者 floor 留极小黑边
+    // 这里使用除法，并在渲染时处理边界，保证最大化利用屏幕
+    m_width = m_screenWidth / m_fontWidth;
+    // 如果余数超过一半字体宽，可以考虑加一列（会被裁剪）
+    // 但为了简单，先这样。余数最大为 fontWidth - 1 像素。
+    
+    // 4. 假设字符高宽比 2:1 (Consolas)
     m_fontHeight = m_fontWidth * 2;
     
-    // 根据屏幕高度计算行数
+    // 5. 计算行数
     m_height = m_screenHeight / m_fontHeight;
+    
+    // 打印调试信息 (在控制台可见)
+    std::cout << "Target Width: " << targetWidth << std::endl;
+    std::cout << "Adjusted Resolution: " << m_width << "x" << m_height << std::endl;
+    std::cout << "Font Size: " << m_fontWidth << "x" << m_fontHeight << " px" << std::endl;
+
+    if (m_width < 1) m_width = 1;
     if (m_height < 1) m_height = 1;
 
     // 创建字体用于生成 Atlas
