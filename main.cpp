@@ -13,6 +13,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             g_running = false;
             PostQuitMessage(0);
             return 0;
+        case WM_MOUSEACTIVATE:
+            // 禁止鼠标激活窗口
+            return MA_NOACTIVATE;
+        case WM_NCHITTEST:
+            // 确保所有点击都穿透 (虽然 WS_EX_TRANSPARENT 已经做了，但双重保险)
+            return HTTRANSPARENT;
         // 注意：当窗口穿透鼠标时，WM_KEYDOWN 可能无法接收
         // 所以我们可能需要使用 GetAsyncKeyState 在主循环中检测
     }
@@ -45,7 +51,12 @@ int main(int argc, char* argv[]) {
     RegisterClass(&wc);
 
     HWND hwnd = CreateWindowEx(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_LAYERED, // WS_EX_TRANSPARENT 让鼠标穿透
+        // WS_EX_NOACTIVATE: 禁止窗口被激活
+        // WS_EX_TRANSPARENT: 鼠标穿透
+        // WS_EX_LAYERED: 必须配合使用
+        // WS_EX_TOOLWINDOW: 不在任务栏显示
+        // WS_EX_TOPMOST: 置顶
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE, 
         CLASS_NAME,
         "ASCII Shader",
         WS_POPUP | WS_VISIBLE,

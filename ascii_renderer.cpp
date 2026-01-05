@@ -116,7 +116,11 @@ void AsciiRenderer::ProcessAndDraw(HDC hSrcDC, HDC hDestDC, int screenW, int scr
 
     // 优化：使用 SetTextColor 和 TextOut 还是比较慢
     // 但在没有 Direct2D 的情况下这是最简单的
-    
+    // 优化2：ExtTextOut 通常比 TextOut 快一点点
+    // 优化3：缓存颜色，避免重复调用 SetTextColor
+
+    COLORREF lastColor = CLR_INVALID;
+
     for (int y = 0; y < m_height; ++y) {
         xPos = 0;
         for (int x = 0; x < m_width; ++x) {
@@ -132,11 +136,17 @@ void AsciiRenderer::ProcessAndDraw(HDC hSrcDC, HDC hDestDC, int screenW, int scr
             int charIdx = (gray * (tableLen - 1)) / 255;
             char c = m_asciiTable[charIdx];
 
-            // 设置颜色
-            SetTextColor(hDestDC, RGB(p.rgbRed, p.rgbGreen, p.rgbBlue));
+            // 设置颜色 (仅当颜色变化时)
+            COLORREF currentColor = RGB(p.rgbRed, p.rgbGreen, p.rgbBlue);
+            if (currentColor != lastColor) {
+                SetTextColor(hDestDC, currentColor);
+                lastColor = currentColor;
+            }
             
             // 绘制字符
-            TextOutA(hDestDC, xPos, yPos, &c, 1);
+            // ETO_OPAQUE: 用背景色填充矩形 (这里不需要，因为我们已经清屏且 SetBkMode 为 TRANSPARENT)
+            // TextOutA(hDestDC, xPos, yPos, &c, 1);
+            ExtTextOutA(hDestDC, xPos, yPos, 0, NULL, &c, 1, NULL);
             
             xPos += m_fontWidth;
         }
